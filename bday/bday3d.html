@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🎂 Cosmic Birthday Experience</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #000; overflow: hidden; font-family: 'Georgia', serif; }
+  canvas { display: block; position: fixed; top: 0; left: 0; }
+
+  #overlay {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(ellipse at center, #0d0621 0%, #000 100%);
+    z-index: 100;
+    transition: opacity 1.2s ease;
+  }
+  #overlay.hidden { opacity: 0; pointer-events: none; }
+
+  .card {
+    text-align: center; color: #fff;
+    padding: 60px 80px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 24px;
+    backdrop-filter: blur(20px);
+    box-shadow: 0 0 80px rgba(150,80,255,0.15), inset 0 0 40px rgba(255,255,255,0.02);
+  }
+  .card h1 {
+    font-size: 2.2rem; font-weight: 300;
+    letter-spacing: 0.3em; text-transform: uppercase;
+    color: #c9b8f0; margin-bottom: 10px;
+  }
+  .card p {
+    font-size: 0.9rem; color: rgba(255,255,255,0.35);
+    letter-spacing: 0.15em; margin-bottom: 40px;
+  }
+  .card input {
+    display: block; width: 100%;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 12px; padding: 16px 24px;
+    font-size: 2rem; text-align: center; color: #fff;
+    outline: none; margin-bottom: 24px;
+    letter-spacing: 0.1em;
+    transition: border-color 0.3s, box-shadow 0.3s;
+  }
+  .card input:focus {
+    border-color: rgba(180,120,255,0.6);
+    box-shadow: 0 0 20px rgba(150,80,255,0.2);
+  }
+  .card button {
+    background: linear-gradient(135deg, #7b3fe4, #b06ce0);
+    border: none; color: #fff;
+    padding: 16px 48px; font-size: 1rem;
+    letter-spacing: 0.25em; text-transform: uppercase;
+    border-radius: 100px; cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+    box-shadow: 0 0 30px rgba(120,60,220,0.4);
+  }
+  .card button:hover { transform: scale(1.05); box-shadow: 0 0 50px rgba(150,80,255,0.6); }
+
+  #blowHint {
+    position: fixed; bottom: 60px; width: 100%; text-align: center;
+    color: rgba(255,255,255,0.6);
+    font-size: 0.9rem; letter-spacing: 0.3em; text-transform: uppercase;
+    opacity: 0; transition: opacity 1.5s; z-index: 10;
+    pointer-events: none;
+  }
+  #blowHint.visible { opacity: 1; animation: pulse 2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:0.5} 50%{opacity:1} }
+
+  #wishText {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    color: #fff; font-size: clamp(1.5rem, 4vw, 3rem); text-align: center;
+    font-weight: 300; letter-spacing: 0.15em;
+    opacity: 0; pointer-events: none; z-index: 10;
+    text-shadow: 0 0 40px rgba(200,150,255,1), 0 0 80px rgba(150,100,255,0.5);
+    transition: opacity 2s ease;
+    white-space: nowrap;
+  }
+  #wishText.visible { opacity: 1; }
+</style>
+</head>
+<body>
+
+<div id="overlay">
+  <div class="card">
+    <h1>Happy Birthday</h1>
+    <p>Enter your age to begin</p>
+    <input type="number" id="ageInput" min="1" max="120" placeholder="25">
+    <button id="startBtn">Begin ✦</button>
+  </div>
+</div>
+
+<div id="blowHint">🎂 &nbsp; Blow into your mic — or press Space &nbsp; 🎂</div>
+<div id="wishText"></div>
+
+<script type="module">
+import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.module.js';
+
+// ═══════════════════════════════════════════════════════
+// GLOBALS
+// ═══════════════════════════════════════════════════════
+let scene, camera, renderer, clock;
+let userAge = 25;
+let mouse = { x: 0, y: 0 };
+let cameraAngle = 0;
+let cakeGroup = null;
+let candleGroup = null;
+let candleData = [];
+let smokeParticles = [];
+let fireworkUpdaters = [];
+let blownOut = false;
+let analyser = null;
+let starPoints = null;
+let animPhase = 'idle';
+
+// ─── Cake geometry constants ─────────────────────────────────
+// Three tiers stacked from Y = -2.0 upward
+// Each tier: body (h) + frosting top (0.13)
+const CAKE_START_Y = -2.0;
+const TIERS = [
+  { r: 2.4,  h: 1.0,  bodyCol: 0xc8714a, frostCol: 0xffeedd },
+  { r: 1.85, h: 0.9,  bodyCol: 0xb85e45, frostCol: 0xffddcc },
+  { r: 1.35, h: 0.8,  bodyCol: 0xa84f4f, frostCol: 0xffcccc },
+];
+const FROST_H = 0.13;
+
+// Compute the world-Y of the top frosting surface of the whole cake
+function cakeTopWorldY() {
+  let y = CAKE_START_Y;
+  TIERS.forEach(t => { y += t.h + FROST_H; });
+  return y;
+}
+const CAKE_TOP_Y = cakeTopWorldY(); // ≈ -2 + 1.13 + 1.03 + 0.93 = 1.09
+
+// ═══════════════════════════════════════════════════════
+// EASING
+// ═══════════════════════════════════════════════════════
+const easeOutBounce = t => {
+  const n=7.5625, d=2.75;
+  if (t < 1/d)          return n*t*t;
+  if (t < 2/d)          { t-=1.5/d;  return n*t*t+0.75; }
+  if (t < 2.5/d)        { t-=2.25/d; return n*t*t+0.9375; }
+                          t-=2.625/d; return n*t*t+0.984375;
+};
+const easeInQuad  = t => t*t;
+const easeOutCubic= t => 1-(1-t)**3;
+
+// ═══════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════
+function init() {
+  clock = new THREE.Clock();
+  scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x00000a, 0.014);
+
+  camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.1, 800);
+  camera.position.set(0, 2, 14);
+  camera._zoomBase = 14;
+  camera._shake = 0;
+
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.shadowMap.enabled = true;
+  renderer.physicallyCorrectLights = true;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.15;
+  document.body.appendChild(renderer.domElement);
+
+  scene.add(new THREE.AmbientLight(0x150828, 3));
+  const rim = new THREE.DirectionalLight(0x334499, 2);
+  rim.position.set(-5, 10, -5);
+  scene.add(rim);
+  const fill = new THREE.DirectionalLight(0x221133, 1);
+  fill.position.set(5, 3, 5);
+  scene.add(fill);
+
+  buildStarfield();
+
+  window.addEventListener('resize', () => {
+    camera.aspect = innerWidth/innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+  });
+  window.addEventListener('mousemove', e => {
+    mouse.x = (e.clientX/innerWidth - 0.5)*2;
+    mouse.y = -(e.clientY/innerHeight - 0.5)*2;
+  });
+}
+
+// ═══════════════════════════════════════════════════════
+// STARFIELD
+// ═══════════════════════════════════════════════════════
+function buildStarfield() {
+  const N = 5000;
+  const buf = new Float32Array(N*3);
+  for (let i=0;i<N;i++) {
+    buf[i*3]   = (Math.random()-0.5)*400;
+    buf[i*3+1] = (Math.random()-0.5)*400;
+    buf[i*3+2] = (Math.random()-0.5)*400;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(buf,3));
+  starPoints = new THREE.Points(geo, new THREE.PointsMaterial({
+    color:0xffffff, size:0.35, sizeAttenuation:true,
+    transparent:true, opacity:0.8,
+    blending:THREE.AdditiveBlending, depthWrite:false
+  }));
+  scene.add(starPoints);
+}
+
+// ═══════════════════════════════════════════════════════
+// CAKE BUILD
+// ═══════════════════════════════════════════════════════
+const tierGroups = []; // { group, targetY, delay, elapsed, done }
+
+function buildCake() {
+  cakeGroup = new THREE.Group();
+  scene.add(cakeGroup);
+  tierGroups.length = 0;
+
+  let curY = CAKE_START_Y; // running cursor from bottom
+
+  TIERS.forEach((tier, i) => {
+    const centerY = curY + tier.h/2;       // body center in world space
+    curY += tier.h + FROST_H;              // advance to next tier's bottom
+
+    const matBody  = new THREE.MeshStandardMaterial({ color:tier.bodyCol,  roughness:0.65 });
+    const matFrost = new THREE.MeshStandardMaterial({ color:tier.frostCol, roughness:0.2  });
+
+    const body  = new THREE.Mesh(new THREE.CylinderGeometry(tier.r, tier.r+0.07, tier.h, 40), matBody);
+    const frost = new THREE.Mesh(new THREE.CylinderGeometry(tier.r+0.15, tier.r+0.15, FROST_H, 40), matFrost);
+    frost.position.y = tier.h/2 + FROST_H/2;
+
+    // Tiny drip blobs around frosting edge
+    for (let d=0; d<10; d++) {
+      const a = (d/10)*Math.PI*2;
+      const blob = new THREE.Mesh(
+        new THREE.SphereGeometry(0.08,6,6),
+        new THREE.MeshStandardMaterial({color:tier.frostCol, roughness:0.15})
+      );
+      blob.position.set(Math.cos(a)*(tier.r+0.14), tier.h/2-0.04, Math.sin(a)*(tier.r+0.14));
+      body.add(blob);
+    }
+
+    const g = new THREE.Group();
+    g.add(body);
+    g.add(frost);
+    g.position.y = centerY + 30; // start far above
+
+    cakeGroup.add(g);
+    tierGroups.push({ group:g, targetY:centerY, delay:i*0.38, elapsed:0, done:false });
+  });
+}
+
+function tickCakeDrop(dt) {
+  let allDone = true;
+  tierGroups.forEach(entry => {
+    if (entry.done) return;
+    allDone = false;
+    entry.elapsed += dt;
+    const t = Math.max(0, entry.elapsed - entry.delay);
+    const p = Math.min(t/1.4, 1);
+    entry.group.position.y = (entry.targetY+30) + (entry.targetY - (entry.targetY+30)) * easeOutBounce(p);
+    if (p>=1) { entry.group.position.y = entry.targetY; entry.done = true; }
+  });
+  return allDone;
+}
+
+// ═══════════════════════════════════════════════════════
+// CANDLES
+// ═══════════════════════════════════════════════════════
+function buildCandles(age) {
+  candleData = [];
+  candleGroup = new THREE.Group();
+  scene.add(candleGroup);
+
+  const count = Math.min(age, 30);
+  const topR  = TIERS[2].r - 0.1; // usable radius on top tier
+  const CANDLE_H = 0.55;
+  const CANDLE_R = 0.065;
+  const baseY = CAKE_TOP_Y; // world Y of the top frosting surface
+
+  // Build position list in rings
+  const positions = [];
+  if (count === 1) {
+    positions.push({ x:0, z:0 });
+  } else if (count <= 8) {
+    const r = topR * 0.6;
+    for (let i=0;i<count;i++) {
+      const a=(i/count)*Math.PI*2;
+      positions.push({ x:Math.cos(a)*r, z:Math.sin(a)*r });
+    }
+  } else if (count <= 20) {
+    const inner = Math.round(count*0.38);
+    const outer = count - inner;
+    for (let i=0;i<inner;i++) {
+      const a=(i/inner)*Math.PI*2;
+      positions.push({ x:Math.cos(a)*topR*0.38, z:Math.sin(a)*topR*0.38 });
+    }
+    for (let i=0;i<outer;i++) {
+      const a=(i/outer)*Math.PI*2;
+      positions.push({ x:Math.cos(a)*topR*0.82, z:Math.sin(a)*topR*0.82 });
+    }
+  } else {
+    const r1=Math.round(count*0.13), r2=Math.round(count*0.37), r3=count-r1-r2;
+    [[r1,0.22],[r2,0.55],[r3,0.9]].forEach(([n,rf]) => {
+      for (let i=0;i<n;i++) {
+        const a=(i/n)*Math.PI*2;
+        positions.push({ x:Math.cos(a)*topR*rf, z:Math.sin(a)*topR*rf });
+      }
+    });
+  }
+
+  const COLS = [0xff66bb, 0x9966ff, 0x55ddff, 0xffdd55, 0x55ffbb, 0xff9955, 0xff4499, 0x44ffdd];
+
+  positions.forEach((pos, i) => {
+    const col = COLS[i % COLS.length];
+
+    // Body
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(CANDLE_R, CANDLE_R, CANDLE_H, 12),
+      new THREE.MeshStandardMaterial({ color:col, roughness:0.4, emissive:col, emissiveIntensity:0.1 })
+    );
+
+    // Wick
+    const wick = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.005,0.005,0.08,6),
+      new THREE.MeshBasicMaterial({ color:0x111111 })
+    );
+    wick.position.y = CANDLE_H/2 + 0.04;
+
+    // Flame (cone)
+    const flameMat = new THREE.MeshStandardMaterial({
+      color:0xffee44, emissive:0xff8800, emissiveIntensity:5,
+      transparent:true, opacity:0.95, depthWrite:false
+    });
+    const flame = new THREE.Mesh(new THREE.ConeGeometry(0.075, 0.25, 8), flameMat);
+    flame.position.y = CANDLE_H/2 + 0.2;
+
+    // Inner bright core
+    const coreMat = new THREE.MeshBasicMaterial({
+      color:0xffffff, transparent:true, opacity:0.6,
+      blending:THREE.AdditiveBlending, depthWrite:false
+    });
+    const core = new THREE.Mesh(new THREE.SphereGeometry(0.04,6,6), coreMat);
+    core.position.y = CANDLE_H/2 + 0.12;
+
+    // Glow halo
+    const glowMat = new THREE.MeshBasicMaterial({
+      color:0xff9900, transparent:true, opacity:0.3,
+      blending:THREE.AdditiveBlending, depthWrite:false
+    });
+    const glow = new THREE.Mesh(new THREE.SphereGeometry(0.14,8,8), glowMat);
+    glow.position.y = CANDLE_H/2 + 0.18;
+
+    // Point light
+    const light = new THREE.PointLight(0xffaa33, 4, 4);
+    light.position.y = CANDLE_H/2 + 0.25;
+
+    const group = new THREE.Group();
+    group.add(body, wick, flame, core, glow, light);
+
+    // Place: bottom of candle body at baseY, so center is baseY + CANDLE_H/2
+    group.position.set(pos.x, baseY + CANDLE_H/2, pos.z);
+
+    candleGroup.add(group);
+    candleData.push({ group, flame, core, glow, light, blown:false });
+  });
+}
+
+function flickerCandles(t) {
+  candleData.forEach((c, i) => {
+    if (c.blown) return;
+    const f = 0.65 + 0.35 * Math.abs(Math.sin(t*11+i*2.1)) * (0.7+0.3*Math.sin(t*19+i));
+    c.light.intensity     = 4   * (0.72 + 0.28*f);
+    c.flame.scale.y       = 0.88 + 0.12*f;
+    c.flame.position.y    = (0.55/2) + 0.18 + 0.02*f;
+    c.glow.material.opacity = 0.22 + 0.12*f;
+    c.core.material.opacity = 0.5  + 0.15*f;
+  });
+}
+
+// ═══════════════════════════════════════════════════════
+// BLOW OUT
+// ═══════════════════════════════════════════════════════
+function blowOutCandles() {
+  if (blownOut) return;
+  blownOut = true;
+  animPhase = 'blown';
+  document.getElementById('blowHint').classList.remove('visible');
+
+  candleData.forEach((c, i) => {
+    setTimeout(() => {
+      c.blown = true;
+      const wp = new THREE.Vector3();
+      c.flame.getWorldPosition(wp);
+      spawnSmoke(wp);
+
+      const t0 = performance.now();
+      const fade = () => {
+        const p = Math.min((performance.now()-t0)/550, 1);
+        c.flame.material.opacity = 1-p;
+        c.glow.material.opacity  = 0.3*(1-p);
+        c.core.material.opacity  = 0.6*(1-p);
+        c.light.intensity        = 4*(1-p);
+        if (p<1) requestAnimationFrame(fade);
+        else { c.group.remove(c.flame,c.core,c.glow,c.light); }
+      };
+      fade();
+    }, i*40 + Math.random()*50);
+  });
+
+  camera._shake = 0.3;
+  setTimeout(() => { camera._zoomBase = 10; }, 500);
+  setTimeout(launchFireworks, 700);
+  setTimeout(() => {
+    const el = document.getElementById('wishText');
+    el.textContent = `🎉  Happiest Birthday Zoyu!  🎉`;
+    el.classList.add('visible');
+  }, 3000);
+}
+
+// ═══════════════════════════════════════════════════════
+// SMOKE
+// ═══════════════════════════════════════════════════════
+function spawnSmoke(pos) {
+  for (let i=0;i<7;i++) {
+    const m = new THREE.Mesh(
+      new THREE.SphereGeometry(0.04+Math.random()*0.04,6,6),
+      new THREE.MeshBasicMaterial({color:0xaaaaaa,transparent:true,opacity:0.5,depthWrite:false})
+    );
+    m.position.copy(pos);
+    m._v = new THREE.Vector3((Math.random()-.5)*.025, .04+Math.random()*.03, (Math.random()-.5)*.025);
+    m._life = 1; m._d = .018+Math.random()*.012;
+    scene.add(m); smokeParticles.push(m);
+  }
+}
+function updateSmoke() {
+  for (let i=smokeParticles.length-1;i>=0;i--) {
+    const p=smokeParticles[i];
+    p.position.add(p._v); p._life-=p._d;
+    p.material.opacity=Math.max(0,p._life*.5);
+    p.scale.setScalar(1+(1-p._life)*2.5);
+    if(p._life<=0){scene.remove(p);smokeParticles.splice(i,1);}
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// FIREWORKS
+// ═══════════════════════════════════════════════════════
+function launchFireworks() {
+  for (let i=0;i<15;i++) {
+    setTimeout(()=>{
+      launchRocket((Math.random()-.5)*16, -1+(Math.random()-.5)*4);
+    }, i*175+Math.random()*160);
+  }
+}
+
+function launchRocket(x, z) {
+  const COLS=[0xff2255,0xff9900,0x00ffcc,0x44aaff,0xff44ff,0xffff33,0xff6600,0x33ff88];
+  const color=COLS[Math.floor(Math.random()*COLS.length)];
+  const targetY=3+Math.random()*7;
+  const dur=0.75+Math.random()*0.35;
+
+  const trailBuf = new Float32Array(24*3);
+  const trailGeo = new THREE.BufferGeometry();
+  trailGeo.setAttribute('position', new THREE.BufferAttribute(trailBuf,3));
+  const trailLine = new THREE.Line(trailGeo,
+    new THREE.LineBasicMaterial({color,transparent:true,opacity:0.8,blending:THREE.AdditiveBlending})
+  );
+  scene.add(trailLine);
+
+  let el=0; const hist=[];
+  const update = dt => {
+    el+=dt;
+    const p=Math.min(el/dur,1);
+    const y=-7+(targetY+7)*easeInQuad(p);
+    hist.unshift({x,y,z}); if(hist.length>24) hist.pop();
+    hist.forEach((h,i)=>{ trailBuf[i*3]=h.x; trailBuf[i*3+1]=h.y; trailBuf[i*3+2]=h.z; });
+    trailGeo.attributes.position.needsUpdate=true;
+    trailGeo.setDrawRange(0,hist.length);
+    if(p>=1){ scene.remove(trailLine); burst(x,targetY,z,color); return false; }
+    return true;
+  };
+  fireworkUpdaters.push(update);
+}
+
+function burst(bx,by,bz,color) {
+  const N=90+Math.floor(Math.random()*60);
+  const pos=new Float32Array(N*3);
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  const mat=new THREE.PointsMaterial({color,size:0.14,transparent:true,opacity:1,blending:THREE.AdditiveBlending,depthWrite:false});
+  const pts=new THREE.Points(geo,mat);
+  pts.position.set(bx,by,bz);
+  scene.add(pts);
+
+  const light=new THREE.PointLight(color,14,8);
+  light.position.set(bx,by,bz);
+  scene.add(light);
+
+  const vels=[];
+  for(let i=0;i<N;i++){
+    const th=Math.random()*Math.PI*2, ph=Math.acos(2*Math.random()-1), sp=0.04+Math.random()*0.1;
+    vels.push(new THREE.Vector3(Math.sin(ph)*Math.cos(th)*sp, Math.sin(ph)*Math.sin(th)*sp, Math.cos(ph)*sp));
+  }
+
+  let life=1;
+  const update = ()=>{
+    life-=0.015;
+    mat.opacity=Math.max(0,life*life);
+    light.intensity=14*Math.max(0,life);
+    const arr=geo.attributes.position.array;
+    for(let i=0;i<N;i++){
+      arr[i*3]+=vels[i].x; arr[i*3+1]+=vels[i].y-0.0012; arr[i*3+2]+=vels[i].z;
+      vels[i].multiplyScalar(0.96);
+    }
+    geo.attributes.position.needsUpdate=true;
+    if(life<=0){scene.remove(pts);scene.remove(light);return false;}
+    return true;
+  };
+  fireworkUpdaters.push(update);
+}
+
+// ═══════════════════════════════════════════════════════
+// MIC
+// ═══════════════════════════════════════════════════════
+async function initMic() {
+  try {
+    const ctx=new(window.AudioContext||window.webkitAudioContext)();
+    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    const src=ctx.createMediaStreamSource(stream);
+    analyser=ctx.createAnalyser(); analyser.fftSize=256;
+    src.connect(analyser);
+  } catch(e){ console.warn('Mic unavailable'); }
+}
+
+const _buf=new Uint8Array(128);
+function detectBlow() {
+  if(!analyser||blownOut)return;
+  analyser.getByteTimeDomainData(_buf);
+  let rms=0;
+  for(let i=0;i<_buf.length;i++){const v=(_buf[i]-128)/128;rms+=v*v;}
+  if(Math.sqrt(rms/_buf.length)>0.048) blowOutCandles();
+}
+
+// ═══════════════════════════════════════════════════════
+// RENDER LOOP
+// ═══════════════════════════════════════════════════════
+let candlesBuilt=false;
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt=Math.min(clock.getDelta(),0.05);
+  const t=clock.getElapsedTime();
+
+  // Stars
+  if(starPoints){
+    starPoints.rotation.y+=0.000045;
+    starPoints.rotation.x+=0.000018;
+    starPoints.material.opacity=0.75+Math.sin(t*0.4)*0.06+(animPhase==='blown'?0.2:0);
+  }
+
+  // Camera float + parallax
+  cameraAngle+=0.0025;
+  const cx=Math.sin(cameraAngle)*1.8+mouse.x*0.5;
+  const cy=2.0+Math.sin(cameraAngle*0.65)*0.7+mouse.y*0.35;
+  camera.position.x+=(cx-camera.position.x)*0.025;
+  camera.position.y+=(cy-camera.position.y)*0.025;
+
+  // Shake
+  if(camera._shake>0){
+    camera.position.x+=(Math.random()-.5)*camera._shake*0.2;
+    camera.position.y+=(Math.random()-.5)*camera._shake*0.14;
+    camera._shake=Math.max(0,camera._shake-dt*1.5);
+  }
+  // Zoom
+  camera.position.z+=(camera._zoomBase-camera.position.z)*0.022;
+  camera.lookAt(0,0.8,0);
+
+  // Cake drop
+  if(animPhase==='building'){
+    const done=tickCakeDrop(dt);
+    if(done && !candlesBuilt){
+      candlesBuilt=true;
+      buildCandles(userAge);
+      setTimeout(()=>{
+        animPhase='lit';
+        document.getElementById('blowHint').classList.add('visible');
+        initMic();
+      }, 700);
+    }
+  }
+
+  if(animPhase==='lit'){ flickerCandles(t); detectBlow(); }
+
+  updateSmoke();
+
+  for(let i=fireworkUpdaters.length-1;i>=0;i--){
+    if(fireworkUpdaters[i](dt)===false) fireworkUpdaters.splice(i,1);
+  }
+
+  renderer.render(scene,camera);
+}
+
+// ═══════════════════════════════════════════════════════
+// START
+// ═══════════════════════════════════════════════════════
+init();
+animate();
+
+document.getElementById('startBtn').addEventListener('click',()=>{
+  const v=parseInt(document.getElementById('ageInput').value);
+  userAge=isNaN(v)?25:Math.max(1,Math.min(120,v));
+  const overlay=document.getElementById('overlay');
+  overlay.classList.add('hidden');
+  setTimeout(()=>{ overlay.style.display='none'; buildCake(); animPhase='building'; },1200);
+});
+
+document.getElementById('ageInput').addEventListener('keydown',e=>{
+  if(e.key==='Enter') document.getElementById('startBtn').click();
+});
+
+window.addEventListener('keydown',e=>{
+  if(e.code==='Space' && animPhase==='lit') blowOutCandles();
+});
+</script>
+</body>
+</html>
