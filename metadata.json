@@ -1,5 +1,0 @@
-{
-  "name": "Cosmic Birthday 3D",
-  "description": "An immersive 3D interactive birthday experience in space with blow detection.",
-  "requestFramePermissions": ["microphone"]
-}
