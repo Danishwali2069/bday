@@ -6,7 +6,7 @@
 export const BIRTHDAY_CONFIG = {
   // Birthday person's name and default age
   name: "baby",
-  defaultAge: 21,
+  defaultAge: 18,
 
   // Main banner heading displayed across the top
   topHeading: "🎀 Happiest Birthday baby! 🎀",
